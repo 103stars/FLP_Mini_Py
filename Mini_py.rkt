@@ -313,6 +313,38 @@
   )
 )
 
+(define primitive-deref
+  (lambda (ref)
+    (cases reference ref
+      (a-ref (pos vec mut)
+             (vector-ref vec pos)
+      )
+    )
+  )
+)
+
+
+;**Cambia el valor de la referencia por el valor dado**
+
+(define setref!
+  (lambda (ref val)
+    (if (target? ref)
+        (cases target ref
+          (indirect-target (refi) (primitive-setref! refi val))
+        )
+        (primitive-setref! ref val)
+    )
+  )
+)
+
+(define primitive-setref!
+     (lambda (ref val)
+       (cases reference ref
+         (a-ref (pos vec mut) (vector-set! vec pos val))
+       )
+     )
+    )
+
 
 ;********************* Ambientes****************
 ;Definición del tipo de ambiente.
