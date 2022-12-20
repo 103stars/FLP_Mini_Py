@@ -345,6 +345,30 @@
      )
     )
 
+;**Definición de Targets**
+
+(define-datatype target target?
+  (indirect-target (ref  ref-to-direct-target? ))
+
+)
+
+(define aplicar-indirect-target
+  (lambda (val)
+    (cases target val (indirect-target (ref)  (primitive-deref ref)))
+  )
+)
+
+(define ref-to-direct-target?
+  (lambda (x)
+    (and (reference? x)
+         (cases reference x
+           (a-ref (pos vec mut)
+                  (if  (not (reference?  (vector-ref vec pos) ) )  #t #f )
+                  )
+           )
+         )
+    )
+  )
 
 ;********************* Ambientes****************
 ;Definición del tipo de ambiente.
@@ -394,7 +418,6 @@
     )
   )
      
-
 
 
 ; Definición de true-valor como un valor de verdad.
