@@ -226,7 +226,20 @@
     ;concatenar
     (primitiva ("concatenar") prim-concatenar)
 
-
+    ;primitivas sobre listas
+    (primitiva ("vacio?") lst-vacio?)
+    (primitiva ("vacio") lst-vacio)
+    (primitiva ("lista?") lst-lista?)
+    (primitiva ("crear-lista") lst-create)
+    (primitiva ("cabeza") lst-cabeza)
+    (primitiva ("cola") lst-cola)
+    (primitiva ("append") lst-append)
+    
+    ;primitivas sobre vectores
+    (primitiva ("vector?") vec-vector?)
+    (primitiva ("ref-vector") vec-ref-vector)
+    (primitiva ("set-vector") vec-set-vector)
+    (primitiva ("crear-vector") vec-crear-vector)
     
   )
 )
