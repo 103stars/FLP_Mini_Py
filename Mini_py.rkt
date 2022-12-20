@@ -369,6 +369,82 @@
          )
     )
   )
+  
+  ; Definición de una variable cuando muta y cuando no.
+
+(define-datatype variable variable?
+  (mutable (id symbol?))
+  (inmutable (id symbol?))
+)
+; Definición de una función para encontrar el simbolo en una lista de variables.
+
+(define encontrar-sim-var
+  (lambda (sym vars)
+    (busqueda-symb-in-vars sym vars 0)
+  )
+)
+; Definición de función auxiliar de busqueda simbolo en una lista de variables.
+
+(define busqueda-symb-in-vars
+  (lambda (sym vars pos)
+    (cond
+      ( (null? vars) #f)
+      ( (equal? sym (retornar-simbolo (car vars))) pos )
+      ( else (busqueda-symb-in-vars sym (cdr vars) (+ pos 1)) )
+    )
+  )
+)
+; Definición de función para encontrar en el ambiente la variable que tenga el mismo simbolo y retornarla.
+
+(define var-es-mutable?
+  (lambda (sym env)
+      (cases environment env
+      (empty-env-record ()
+                        (eopl:error 'apply-env-ref "No se encontró ~s" sym))
+      (extended-env-record (vars vals env)
+                           (let ((pos (encontrar-sim-var sym vars)))
+                             (if (number? pos)
+                                 (cases variable (list-ref vars pos)
+                                   (mutable (id) #t)
+                                   (inmutable (id) #f)
+                                 )
+                                 (var-es-mutable? sym env)
+                             )
+        )
+      )
+  )
+ )
+)
+; Definición que retorna cuando una variable es mutable o no.
+
+(define encontrar-valor-mutable
+ (lambda (sym vars)
+   (busqueda-mut-in-vars sym vars 0)
+ )
+)
+
+; Definición de función auxiliar que actúa como búsqueda en la lista de variables.
+
+(define busqueda-mut-in-vars
+  (lambda (sym vars pos)
+    (cond
+      ( (null? vars) #f)
+      ( (equal? sym (retornar-simbolo (car vars))) (cases variable (car vars) (mutable (id) 'M) (inmutable (id) 'I) )  )
+      ( else (busqueda-mut-in-vars sym (cdr vars) (+ pos 1)) )
+    )
+  )
+)
+
+; Definición que retorna el símbolo de la variable.
+
+(define retornar-simbolo
+  (lambda (var)
+    (cases variable var
+      (mutable (id) id)
+      (inmutable (id) id)
+    )
+  )
+)
 
 ;********************* Ambientes****************
 ;Definición del tipo de ambiente.
