@@ -181,8 +181,31 @@
     ;while
     (expresion ("while" "("expresion")" "do" "{"expresion"}" ) while-exp)
 
- 
+    ;for
+    (expresion ("for" "{" identificador "=" expresion ";" to expresion "}" "do" expresion) for-exp)
+    (to ("to") to-for)
+    (to ("downto") down-for)
     
+    ;Asignación de Variables
+    
+    ;set
+    (expresion ("set" identificador "=" expresion) set-exp)
+
+    ;Procedimientos
+    
+    ;proc
+    (expresion ("proc" "("(separated-list identificador ",") ")" "{" expresion "}") procedure-exp)
+    
+    ;invocar
+    (expresion ("invocar" expresion "(" (separated-list expresion ",") ")") procedure-call-exp)
+    
+    ;rec
+    (expresion ("rec" (arbno identificador "(" (separated-list identificador ",") ")" "=" expresion)  "in" expresion)  recursive-exp)
+ 
+    ;Instancias B-SAT
+    (expresion ("FNC" numero "(" (separated-list clausula-or "and") ")") instancia-sat-exp)
+    (clausula-or ("("  (separated-list numero "or") ")") clausula-or-exp)
+    (expresion ("*"identificador".solve()") solve-instancia-sat-exp)
  
     
     ;Primitivas aritméticas para enteros
@@ -203,7 +226,7 @@
     ;concatenar
     (primitiva ("concatenar") prim-concatenar)
 
-  
+
     
   )
 )
@@ -269,10 +292,12 @@
       (registro-exp (ids exps) (implementacion-exp-registros ids exps env))
       (expr-bool-exp (expres-bol) (implementacion-exp-booleanas expres-bol env))
 
+      
       ;Estructuras de Control
       (begin-exp (expr exp-lists) (implementacion-exp-begin expr exp-lists env))
       (if-exp (bool-exp true-expr false-expr) (implementacion-exp-if bool-exp true-expr false-expr env))  
-      (while-exp (bool-exp body) (implementacion-exp-while bool-exp body env))                                                   
+      (while-exp (bool-exp body) (implementacion-exp-while bool-exp body env))
+      (for-exp (id init-value goto final-value body) (implementacion-exp-for id init-value goto final-value body env))    
                   
       
       ;Procedimientos
@@ -280,8 +305,13 @@
       (procedure-call-exp (expr args) (implementacion-exp-call-procedure        expr args env))
       (recursive-exp (proc-names idss bodies letrec-body) (implementacion-exp-recursivo proc-names idss bodies letrec-body env))
 
+
       ;Asignación de Variables
       (set-exp (id expr) (implementacion-exp-set id expr env))
+
+      ;Instancias SAT                                              
+      (instancia-sat-exp (first-int clauses)(implementacion-exp-sat first-int clauses ) )                                       
+      (solve-instancia-sat-exp (id) (implementacion-exp-resolver-sat id env))   
       )
      )
    )
@@ -512,6 +542,15 @@
   )
 )
 
+(define-datatype sat sat?
+  (instancia-sat (n integer?) (lista list?))
+)
+; Definición de datatype que define el tipo de dato árbol binario SAT.
+
+(define-datatype arbol-sat arbol-sat?
+  (nodo (value number?) (arbol-izquierda arbol-sat?) (arbol-derecha arbol-sat?))
+  (arbol-vacio)
+)
 
 ;***********************Desarrollo de Implementaciones*****************************************
 
@@ -695,6 +734,27 @@
 )
 
 
+(define implementacion-exp-set
+  (lambda (id expr env)
+     (begin
+       (if  (var-es-mutable? id env)
+            (cases reference (apply-env-ref env id)
+              (a-ref (pos vals mut)  
+                  (if (target? (vector-ref vals pos))
+                    (cases target (vector-ref vals pos) 
+                      (indirect-target (ref)  (setref! ref (eval-expression expr env)))
+                    )
+                  (setref! (apply-env-ref env id) (eval-expression expr env))
+                )
+              )
+            )      
+            (eopl:error 'set-exp "No se puede modificar la constante ~s" id)
+       )
+       1
+     )
+  )
+)
+
 
 
 ; Implementación de primitivas.
@@ -745,7 +805,61 @@
   )
 )
 
+; Implementación ciclo for.
 
+(define implementacion-exp-for
+  (lambda (id init-value goto final-value body env)
+    (for-recursivo id final-value body goto (extend-env (list (mutable id)) (list (eval-expression init-value env)) env))
+  )
+)
+
+
+; Implementación ciclo for - recursivo.
+
+(define for-recursivo
+  (lambda (id final-value body goto env)
+    (cases to goto
+      (to-for () (if (< (apply-env env id ) (eval-expression final-value env)) (begin (eval-expression body env) (for-recursivo id final-value body goto env)) 1)   )
+      (down-for () (if (> (apply-env env id ) (eval-expression final-value env)) (begin (eval-expression body env) (for-recursivo id final-value body goto env)) 1) )
+    )   
+  )
+)
+
+; Implementación expresión recursiva
+
+(define implementacion-exp-recursivo
+  (lambda ( proc-names idss bodies letrec-body env)
+    (eval-expression letrec-body (extend-env-recursively proc-names idss bodies env))
+  )
+)
+
+
+; Implementación auxiliar crea un ambiente extendido para procedimientos recursivos.
+
+(define extend-env-recursively
+  (lambda (proc-names idss bodies old-env)
+    (let ((len (length proc-names)))
+      (let ((vec (make-vector len)))
+        (let ((env (extended-env-record (map (lambda (id) (mutable id))proc-names) vec old-env)))
+          (for-each
+            (lambda (pos ids body)
+              (vector-set! vec pos (closure ids body env))
+            )
+            (iota len) idss bodies
+          )
+          env
+      )
+     )
+   )
+  ))
+
+; Implementación de instancias SAT
+
+(define implementacion-exp-sat
+  (lambda (first-int clauses )
+    (instancia-sat first-int (implementacion-exp-or-sat clauses))
+  )
+)
 
 (interpreter)
 
