@@ -970,7 +970,7 @@
 
 (define implementacion-exp-while
         (lambda (bool-exp body env)
-          (if (isTrue? (eval-expression bool-exp env)) (begin (eval-expression body env) (implementacion-exp-while bool-exp body env)) 'ok)
+          (if (isTrue? (eval-expression bool-exp env)) (begin (eval-expression body env) (implementacion-exp-while bool-exp body env)) '⠀)
         )
 )
 
