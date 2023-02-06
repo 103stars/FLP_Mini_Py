@@ -89,7 +89,7 @@
 (define especificacion-lexica
 '((espacio-en-blanco (whitespace) skip)
   (comentario ("/*" (arbno (not #\newline))) skip)
-  (identificador(letter (arbno (or letter digit))) symbol)
+  (identificador (letter (arbno (or letter digit "."))) symbol)
   (null ("null") string)
   (numero (digit (arbno digit)) number) 
   (numero ("-" digit (arbno digit)) number)
@@ -107,7 +107,7 @@
 (define gramatica
 
   '(
-    (program (expresion) a-programa)
+    (program ((arbno class-decl) expresion) a-program)
     
     ;Definiciones:
 
@@ -225,8 +225,20 @@
     ;rec
     (expresion ("rec" (arbno identificador "(" (separated-list identificador ",") ")" "=" expresion)  "in" expresion)  recursive-exp)
     
+    ;;class-decl
+     (class-decl ("class" identificador "extends" identificador (arbno "atr" identificador) (arbno method-decl)) a-class-decl)
 
+    ;;method-decl
+    (method-decl ("def" identificador "(" (separated-list identificador ",") ")" ":" expresion ) a-method-decl)
+
+    ;;new-object
+    (expresion ("new" identificador "(" (separated-list expresion ",") ")") new-object-exp)
     
+    ;;super-call
+    (expresion ("super" identificador "(" (separated-list identificador ",") ")") super-call-exp)
+
+    ;;method-app-exp
+    (expresion ( "inv" expresion "->" identificador "("  (separated-list expresion ",") ")") method-app-exp)
     ;Primitivas aritméticas para enteros
 
     (primitiva ("+") primitiva-sum)
@@ -292,17 +304,14 @@
 )
 
 ;||||||||||||||||||||||||Interpretador||||||||||||||||||||||||
-
+;;evalua un programa
 ;;Definición (Eval-Program)
-(define eval-program
+(define eval-program 
   (lambda (pgm)
     (cases program pgm
-      (a-programa (body)
-        (eval-expression body (init-env))
-      )
-    )
-  )
-)
+      (a-program (c-decls exp)
+        (elaborate-class-decls! c-decls)
+        (eval-expression exp (init-env))))))
 
 ;;Ambiente Inicial
 (define init-env
@@ -322,14 +331,21 @@
       (ide-exp (id) (apply-env env id))
       (null-exp (null) 'null)
       (num-exp (numb) (implementacion-exp-numeros numb))
-      (var-exp (vars vals body) (implementacion-exp-var vars vals body env))                                                     
-      (const-exp (vars vals body) (implementacion-exp-cons vars vals body env))
+      (var-exp (vars vals body) (let ((args (eval-variableLocal-exp-rands vals env)))
+                 (eval-expression body (extend-env vars args env))))                                                     
+      (const-exp (vars vals body) (let ((args (eval-variableLocal-exp-rands vals env)))
+
+                           (if (updateValExp? body)
+                               (eopl:error 'eval-expression
+                                "No puedes actualizar los valores de constantes ~s" body)
+                               (eval-expression body (extend-env vars args env)))
+                           ))
       (cadena-exp (str) (implementacion-exp-cadenas      str))
       (caracter-exp (char) (implementacion-exp-caracteres char))
       (primitive-exp (prim list-expres) (implementacion-exp-primitivas prim list-expres env))  
       (refe-exp (ref)
       (cases reference (apply-env-ref env ref)
-        (a-ref (pos vals mut) 
+        (a-ref (pos vals) 
                (if (target? (vector-ref vals pos) )
                    (vector-ref vals pos)
                    (indirect-target (apply-env-ref env ref))))))
@@ -349,10 +365,14 @@
       ;Procedimientos
       (procedure-exp (ids body) (implementacion-exp-procedure         ids body env))
       (procedure-call-exp (expr args) (implementacion-exp-call-procedure        expr args env))
-      (recursive-exp (proc-names idss bodies letrec-body) (implementacion-exp-recursivo proc-names idss bodies letrec-body env))
+      (recursive-exp (proc-names idss bodies letrec-body) (eval-expression letrec-body
+                                   (extend-env-recursively proc-names idss bodies env)))
 
       ;Asignación de Variables
-      (set-exp (id expr) (implementacion-exp-set id expr env))
+      (set-exp (id newVal)
+               (setref!
+                  (apply-env-ref env id)
+                  (eval-expression newVal env)))
       
 
       ;Hexadecimales [Base 8,16,32]
@@ -361,30 +381,82 @@
       ;Impresión de Variables                  
       (imp-exp (ex) (display  (eval-expression ex env)))
 
-                                                    
+     ; POO
+      (new-object-exp (class-name rands)
+        (let ((args (eval-rands rands env))
+              (obj (new-object class-name)))
+          (find-method-and-apply 'init class-name obj args)
+          obj
+          ))
+
+      ;; para las expresiones de invocación de métodos (send)
+      (method-app-exp (obj-exp method-name rands)
+        (let ((args (eval-rands rands env))
+              (obj (eval-expression obj-exp env)))
+          (find-method-and-apply
+            method-name (object->class-name obj) obj args)))
+
+      (super-call-exp (method-name rands)
+        (let ((args (eval-rands rands env))
+              (obj (apply-env env 'self)))
+          (find-method-and-apply
+            method-name (apply-env env '%super) obj args)))                                  
     )
   )
 )
+(define updateValExp?
+  (lambda (body)
+    (cases expresion body
+      (procedure-exp (ids cuerpo)
+          (updateValExp? cuerpo))
+      
+      (var-exp (ids values body)
+                        (updateValExp? body))
+      (const-exp (ids values body)
+                        (updateValExp? body) )
 
+      (set-exp (id newVal)
+               #t)
+
+      (begin-exp (exp exps)
+                 (if (updateValExp? exp)
+                     #t
+                     (let loop (
+                                 (exps exps)
+                               )
+                       (if (null? exps)
+                           #f
+                           (if (updateValExp? (car exps))
+                               #t
+                               (loop (cdr exps))
+                           )
+                       ) 
+                     )
+                 )
+        )
+      (recursive-exp (proc-names idss bodies letrec-body)
+                  (updateValExp? letrec-body))      
+      (else #f)
+    )
+  )
+)
 ;||||||||||||||||||||||||[Paso por valor y paso por referencia]||||||||||||||||||||||||
 
 ; Registra una referencia donde pos es la posicion de la referencia en el vector.
 
 (define-datatype reference reference?
   (a-ref (position integer?)
-         (vec vector?)
-         (mutable symbol?)
-        )
-  )
+         (vec vector?)))
 
 ; Retorna el valor de la referencia del vector.
 
 (define de-ref
   (lambda (ref)
     (cases reference ref
-      (a-ref (pos vals mut) 
+      (a-ref (pos vals) 
         (if (target? (vector-ref vals pos))
            (cases target (vector-ref vals pos)
+             (direct-target (expval) expval)
               (indirect-target (refi) (primitive-deref refi))
            )
           (primitive-deref ref)
@@ -397,7 +469,7 @@
 (define primitive-deref
   (lambda (ref)
     (cases reference ref
-      (a-ref (pos vec mut)
+      (a-ref (pos vec)
              (vector-ref vec pos)
       )
     )
@@ -408,123 +480,42 @@
 ;Cambia el valor de la referencia por el valor dado
 
 (define setref!
-  (lambda (ref val)
-    (if (target? ref)
-        (cases target ref
-          (indirect-target (refi) (primitive-setref! refi val))
-        )
-        (primitive-setref! ref val)
-    )
-  )
-)
+  (lambda (ref expval)
+    (let ((ref (cases target (primitive-deref ref)
+                (direct-target (expval1) ref)
+                (indirect-target (ref1) ref1))))
+      (primitive-setref! ref (direct-target expval)))))
 
 (define primitive-setref!
-     (lambda (ref val)
-       (cases reference ref
-         (a-ref (pos vec mut) (vector-set! vec pos val))
-       )
-     )
-    )
+  (lambda (ref val)
+    (cases reference ref
+      (a-ref (pos vec)
+             (vector-set! vec pos val)))))
+(define expval?
+  (lambda (x)
+    (or (number? x)  (string? x) (procval? x)(vector? x) (boolean? x) (list? x))))
 
 ; Definición de Targets
 
 (define-datatype target target?
+  (direct-target (expval expval?))
   (indirect-target (ref  ref-to-direct-target? ))
 
 )
 
-(define aplicar-indirect-target
-  (lambda (val)
-    (cases target val (indirect-target (ref)  (primitive-deref ref)))
-  )
-)
+
 
 (define ref-to-direct-target?
   (lambda (x)
     (and (reference? x)
          (cases reference x
-           (a-ref (pos vec mut)
-                  (if  (not (reference?  (vector-ref vec pos) ) )  #t #f )
-                  )
-           )
-         )
-    )
-  )
+           (a-ref (pos vec)
+                  (cases target (vector-ref vec pos)
+                    (direct-target (v) #t)
+                    (indirect-target (v) #f)))))))
 ; Definición de una variable cuando muta y cuando no.
 
-(define-datatype variable variable?
-  (mutable (id symbol?))
-  (inmutable (id symbol?))
-)
-; Definición de una función para encontrar el simbolo en una lista de variables.
 
-(define encontrar-sim-var
-  (lambda (sym vars)
-    (busqueda-symb-in-vars sym vars 0)
-  )
-)
-; Definición de función auxiliar de busqueda simbolo en una lista de variables.
-
-(define busqueda-symb-in-vars
-  (lambda (sym vars pos)
-    (cond
-      ( (null? vars) #f)
-      ( (equal? sym (retornar-simbolo (car vars))) pos )
-      ( else (busqueda-symb-in-vars sym (cdr vars) (+ pos 1)) )
-    )
-  )
-)
-; Definición de función para encontrar en el ambiente la variable que tenga el mismo simbolo y retornarla.
-
-(define var-es-mutable?
-  (lambda (sym env)
-      (cases environment env
-      (empty-env-record ()
-                        (eopl:error 'apply-env-ref "No se encontró ~s" sym))
-      (extended-env-record (vars vals env)
-                           (let ((pos (encontrar-sim-var sym vars)))
-                             (if (number? pos)
-                                 (cases variable (list-ref vars pos)
-                                   (mutable (id) #t)
-                                   (inmutable (id) #f)
-                                 )
-                                 (var-es-mutable? sym env)
-                             )
-        )
-      )
-  )
- )
-)
-; Definición que retorna cuando una variable es mutable o no.
-
-(define encontrar-valor-mutable
- (lambda (sym vars)
-   (busqueda-mut-in-vars sym vars 0)
- )
-)
-
-; Definición de función auxiliar que actúa como búsqueda en la lista de variables.
-
-(define busqueda-mut-in-vars
-  (lambda (sym vars pos)
-    (cond
-      ( (null? vars) #f)
-      ( (equal? sym (retornar-simbolo (car vars))) (cases variable (car vars) (mutable (id) 'M) (inmutable (id) 'I) )  )
-      ( else (busqueda-mut-in-vars sym (cdr vars) (+ pos 1)) )
-    )
-  )
-)
-
-; Definición que retorna el símbolo de la variable.
-
-(define retornar-simbolo
-  (lambda (var)
-    (cases variable var
-      (mutable (id) id)
-      (inmutable (id) id)
-    )
-  )
-)
 
   ;||||||||||||||||||||||||[Definición de Ambientes]||||||||||||||||||||||||
 
@@ -532,7 +523,7 @@
 
 (define-datatype environment environment?
   (empty-env-record)
-  (extended-env-record (vars (list-of variable?))
+  (extended-env-record (vars (list-of symbol?))
                        (vec vector?)
                        (env environment?)))
 
@@ -561,19 +552,41 @@
 (define apply-env-ref
   (lambda (env sym)
     (cases environment env
-      (empty-env-record ()
-                        (eopl:error 'apply-env-ref "Simbolo desconocido ~s" sym))
-      (extended-env-record (vars vals env)
-                           (let ((pos (encontrar-sim-var sym vars)) (mut (encontrar-valor-mutable sym vars)) )
-                             (if (and (number? pos) (symbol? mut) )
-                                 (a-ref pos vals mut)
-                                 (apply-env-ref env sym)
-                                 )
-                             )
-                           )
-      )
-    )
-  )
+      (empty-env-record () (eopl:error 'apply-env-ref "No se encontro en el ambiente a ~s" sym))
+      (extended-env-record (syms vals env)
+                           (let ((pos (rib-find-position sym syms)))
+                             (if (number? pos)
+                                 (a-ref pos vals)
+                                 (apply-env-ref env sym)))))))
+;Funciones Auxiliares
+(define eval-variableLocal-exp-rands
+  (lambda (rands env)
+    (map (lambda (x) (eval-variableLocal-exp-rand x env))
+         rands)))
+
+(define eval-variableLocal-exp-rand
+  (lambda (rand env)
+    (direct-target (eval-expression rand env)) 
+    ))
+; funciones auxiliares para encontrar la posición de un símbolo
+; en la lista de símbolos de unambiente
+(define rib-find-position 
+  (lambda (sym los)
+    (list-find-position sym los)))
+
+(define list-find-position
+  (lambda (sym los)
+    (list-index (lambda (sym1) (eqv? sym1 sym)) los)))
+
+(define list-index
+  (lambda (pred ls)
+    (cond
+      ((null? ls) #f)
+      ((pred (car ls)) 0)
+      (else (let ((list-index-r (list-index pred (cdr ls))))
+              (if (number? list-index-r)
+                (+ list-index-r 1)
+                #f))))))
      
 
 ; Definición que retorna una lista de los números desde 0 hasta end
@@ -602,7 +615,13 @@
   )
 )
 
+(define eval-rands
+  (lambda (rands env)
+    (map (lambda (x) (eval-rand x env)) rands)))
 
+(define eval-rand
+  (lambda (rand env)
+    (direct-target (eval-expression rand env))))
 
 ;||||||||||||||||||||||||[Desarrollo de Implementaciones]||||||||||||||||||||||||
 
@@ -667,32 +686,16 @@
 
 ; Función que evalua el cuerpo de un procedimientos en el ambiente extendido.
 
+
+
 (define apply-procedure
   (lambda (proc args)
     (cases procval proc
       (closure (ids body env)
-               (eval-expression body (extend-env  (definir-mutabilidad ids args) args env)
-                                )))))
+               (eval-expression body (extend-env ids args env))))))
 
-; Función que define la mutabilidad de los argumentos envíados.
 
-(define definir-mutabilidad
-  (lambda (ids args)
-   (cond
-     ((null? ids) empty)
-     (else (if (target? (car args))
-               (cases target (car args)
-                 (indirect-target (ref) (cases reference ref (a-ref (pos vec mut)
-           (if (equal? mut 'M)
-                (cons (mutable (car ids)) (definir-mutabilidad (cdr ids) (cdr args)))
-                (cons (inmutable (car ids)) (definir-mutabilidad (cdr ids) (cdr args)))
-                )))))
-                (cons (mutable (car ids)) (definir-mutabilidad (cdr ids) (cdr args)))
-       )
-     )
-   )
-  )
-)
+
 
 ; Implementación de tipo procedure.
 
@@ -870,28 +873,6 @@
   )
 )
 
-; Implementación para set.
-
-(define implementacion-exp-set
-  (lambda (id expr env)
-     (begin
-       (if  (var-es-mutable? id env)
-            (cases reference (apply-env-ref env id)
-              (a-ref (pos vals mut)  
-                  (if (target? (vector-ref vals pos))
-                    (cases target (vector-ref vals pos) 
-                      (indirect-target (ref)  (setref! ref (eval-expression expr env)))
-                    )
-                  (setref! (apply-env-ref env id) (eval-expression expr env))
-                )
-              )
-            )      
-            (eopl:error 'set-exp "No se puede modificar la constante ~s" id)
-       )
-       1
-     )
-  )
-)
 
 ; Implementación de primitivas.
 
@@ -942,20 +923,7 @@
   )
 )
 
-;; Implementación de var.
 
-(define implementacion-exp-var
-  (lambda (vars vals body env)
-    (eval-expression body (extend-env (map (lambda (var) (mutable var)) vars )  (implementacion-exp-listas vals env) env) )
-  )
-)
-; Implementación de cons.
-
-(define implementacion-exp-cons
-  (lambda (vars vals body env)
-    (eval-expression body (extend-env (map (lambda (var) (inmutable var))vars)  (implementacion-exp-listas vals env) env))
-  )
-)
 
 ; Implementación de begin.
 
@@ -986,28 +954,29 @@
 
 (define implementacion-exp-for
   (lambda (id init-value goto final-value body env)
-    (for-recursivo id final-value body goto (extend-env (list (mutable id)) (list (eval-expression init-value env)) env))
+    (letrec
+                   [(iterador (eval-expression init-value env))
+                    (parada (eval-expression final-value env))
+                    (op (cases to goto
+                          (to-for () +)
+                          (down-for () -)
+                          ))
+                    (proc-for (closure (list id) body env))
+                    (for (lambda (var)                           
+                           (if (eqv? var parada)
+                               (apply-procedure proc-for (list (direct-target var)))
+                               (begin (apply-procedure proc-for (list (direct-target var))) (for (op var 1)))
+                               )
+                               )
+                           )]
+                 (for iterador)
+                   )
   )
 )
 
-; Implementación ciclo for - recursivo.
 
-(define for-recursivo
-  (lambda (id final-value body goto env)
-    (cases to goto
-      (to-for () (if (< (apply-env env id ) (eval-expression final-value env)) (begin (eval-expression body env) (for-recursivo id final-value body goto env)) 1)   )
-      (down-for () (if (> (apply-env env id ) (eval-expression final-value env)) (begin (eval-expression body env) (for-recursivo id final-value body goto env)) 1) )
-    )   
-  )
-)
 
-; Implementación expresión recursiva
 
-(define implementacion-exp-recursivo
-  (lambda ( proc-names idss bodies letrec-body env)
-    (eval-expression letrec-body (extend-env-recursively proc-names idss bodies env))
-  )
-)
 
 
 ; Implementación auxiliar crea un ambiente extendido para procedimientos recursivos.
@@ -1016,20 +985,12 @@
   (lambda (proc-names idss bodies old-env)
     (let ((len (length proc-names)))
       (let ((vec (make-vector len)))
-        (let ((env (extended-env-record (map (lambda (id) (mutable id))proc-names) vec old-env)))
+        (let ((env (extended-env-record proc-names vec old-env)))
           (for-each
             (lambda (pos ids body)
-              (vector-set! vec pos (closure ids body env))
-            )
-            (iota len) idss bodies
-          )
-          env
-      )
-     )
-   )
-  )
-)
-
+              (vector-set! vec pos (direct-target (closure ids body env))))
+            (iota len) idss bodies)
+          env)))))
 
 ; Implementación para evaluar la combinación que es correcta.
 
@@ -1086,9 +1047,194 @@
   )
 )
 
+;;;;;;;;;;;;;;;;;;;;;;POO;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Ambiente de declaracion de clases
+
+(define the-class-env '())
+;; Almacena las clases
+(define elaborate-class-decls!
+  (lambda (c-decls)
+    (set! the-class-env c-decls)))
+
+;; Busca las clases
+(define lookup-class
+  (lambda (name)
+    (let loop ((env the-class-env))
+      (cond
+        ((null? env)
+         (eopl:error 'lookup-class
+           "Class not known ~s" name))
+        ((eqv? (class-decl->class-name (car env)) name) (car env))
+        (else (loop (cdr env)))))))
+
+;; Ambiente de métodos
+
+;; Busca los metodos de una clase
+(define lookup-method-decl 
+  (lambda (m-name m-decls)
+    (cond
+      ((null? m-decls) #f)
+      ((eqv? m-name (method-decl->method-name (car m-decls)))
+       (car m-decls))
+      (else (lookup-method-decl m-name (cdr m-decls))))))
+
+;; Auxiliares para el manejo de declaraciones de clases y métodos
+
+(define class-decl->class-name
+  (lambda (c-decl)
+    (cases class-decl c-decl
+      (a-class-decl (class-name super-name field-ids m-decls)
+        class-name))))
+
+(define class-decl->super-name
+  (lambda (c-decl)
+    (cases class-decl c-decl
+      (a-class-decl (class-name super-name field-ids m-decls)
+        super-name))))
+
+(define class-decl->field-ids
+  (lambda (c-decl)
+    (cases class-decl c-decl
+      (a-class-decl (class-name super-name field-ids m-decls)
+        (map (lambda (id) (string->symbol (string-append "self." (symbol->string id)))) field-ids)))))
+
+(define class-decl->method-decls
+  (lambda (c-decl)
+    (cases class-decl c-decl
+      (a-class-decl (class-name super-name field-ids m-decls)
+        m-decls))))
+
+(define method-decl->method-name
+  (lambda (md)
+    (cases method-decl md
+      (a-method-decl (method-name ids body) method-name))))
+
+(define method-decl->ids
+  (lambda (md)
+    (cases method-decl md
+      (a-method-decl (method-name ids body) ids))))
+
+(define method-decl->body
+  (lambda (md)
+    (cases method-decl md
+      (a-method-decl (method-name ids body) body))))
+
+(define method-decls->method-names
+  (lambda (mds)
+    (map method-decl->method-name mds)))
+
+;;;;;;;;;;;;;;;;;; Selectores ;;;;;;;;;;;;;;;;;;
+
+(define part->class-name
+  (lambda (prt)
+    (cases part prt
+      (a-part (class-name fields)
+        class-name))))
+
+(define part->fields
+  (lambda (prt)
+    (cases part prt
+      (a-part (class-name fields)
+        fields))))
+
+(define part->field-ids
+  (lambda (part)
+    (class-decl->field-ids (part->class-decl part))))
+
+(define part->class-decl
+  (lambda (part)
+    (lookup-class (part->class-name part))))
+
+(define part->method-decls
+  (lambda (part)
+    (class-decl->method-decls (part->class-decl part))))
+
+(define part->super-name
+  (lambda (part)
+    (class-decl->super-name (part->class-decl part))))
+
+(define class-name->method-decls
+  (lambda (class-name)
+    (class-decl->method-decls (lookup-class class-name))))
+
+(define class-name->super-name
+  (lambda (class-name)
+    (class-decl->super-name (lookup-class class-name))))
+
+(define object->class-name
+  (lambda (parts)
+    (part->class-name (car parts))))
+
+(define-datatype part part? 
+  (a-part
+    (class-name symbol?)
+    (fields vector?)))
+
+(define new-object
+  (lambda (class-name)
+    (if (eqv? class-name 'objeto)
+      '()
+      (let ((c-decl (lookup-class class-name)))
+        (cons
+          (make-first-part c-decl)
+          (new-object (class-decl->super-name c-decl)))))))
+
+(define make-first-part
+  (lambda (c-decl)
+    (a-part
+      (class-decl->class-name c-decl)
+      (make-vector (length (class-decl->field-ids c-decl))(direct-target 0)))))
 
 
+;;;;;;;;;;;;;;;;;;;; Métodos ;;;;;;;;;;;;;;;;;; 
 
+(define find-method-and-apply
+  (lambda (m-name host-name self args)
+    (if (eqv? host-name 'objeto)
+      (if (eqv? m-name 'init)
+          (eopl:error 'find-method-and-apply
+        "~s method was not provided" m-name)
+          (eopl:error 'find-method-and-apply
+        "No method for name ~s" m-name))
+      (let ((m-decl (lookup-method-decl m-name
+                      (class-name->method-decls host-name))))
+        (if (method-decl? m-decl)
+           (apply-method m-decl host-name self args)
+          (find-method-and-apply m-name 
+            (class-name->super-name host-name)
+            self args))))))
+
+(define view-object-as
+  (lambda (parts class-name)
+    (if (eqv? (part->class-name (car parts)) class-name)
+      parts
+      (view-object-as (cdr parts) class-name))))
+
+(define apply-method
+  (lambda (m-decl host-name self args)
+    (let ((ids (method-decl->ids m-decl))
+          (body (method-decl->body m-decl))
+          (super-name (class-name->super-name host-name)))
+      (eval-expression body
+        (extend-env
+          (cons '%super (cons 'self ids))
+          (cons super-name (cons self args))
+          (build-field-env 
+            (view-object-as self host-name)))))))
+
+(define build-field-env
+  (lambda (parts)
+    (if (null? parts)
+      (empty-env)
+      (extend-env-refs
+        (part->field-ids (car parts))
+        (part->fields    (car parts))
+        (build-field-env (cdr parts))))))
+
+(define extend-env-refs
+  (lambda (syms vec env)
+    (extended-env-record syms vec env)))
 
 
 (interpreter)
@@ -1212,3 +1358,36 @@
 ;(scan&parse "registro(a->4; b->$prueba ; c->123)")
 ;(scan&parse "[ref-registro registro(a->$holamundo; b->$100)]")
 ;(scan&parse "[crear-registro registro(a->4; b->$hola), [set-registro registro(a->5; b->$mundo)]]")
+
+(scan&parse "
+class nodo extends objeto
+  atr left
+  atr right
+  def init(left, right):
+     begin
+       set self.left=left;
+       set self.right=right
+     end
+  def sumar(pred): [+ inv self.left->sumar(pred), inv self.right->sumar(pred)]
+class hoja extends objeto
+  atr valor
+  def init(n): set self.valor= n
+  def sumar(pred): if (invocar pred(self.valor)) {self.valor} else {0}
+const arbol=new nodo(
+                   new nodo(new hoja(1),new hoja(6)), 
+                   new nodo(
+                      new nodo(new hoja(3), new hoja(13)), 
+                      new hoja(11)))
+     in inv arbol->sumar(proc(n){>(n, 10)})")
+(scan&parse "
+rec
+  fibo(n)= if (> (n, 1))
+              {[+ invocar fibo([- n, 1]), invocar fibo([- n, 2])]}
+             else {1}
+  fibonacci(n)= if (==(n, 0))
+                    {lista (1)}
+                   else
+                    {[append
+                        invocar fibonacci([- n,1]),
+                        lista (invocar fibo(n)) ]}
+in invocar fibonacci(5)")
